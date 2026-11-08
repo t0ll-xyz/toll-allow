@@ -24,6 +24,7 @@ https://t0ll.xyz/agents/allow
 | --- | --- |
 | `src/TollAllow.sol` | `Ticket` struct + library: `hash`, `verify` (EOA or ERC-1271 signer), `callSubject`, `swapSubject`, `splitSuffix`, `encodeSuffix` |
 | `src/TollAllowConsumer.sol` | abstract: `used[keccak256(signer, nonce)]`, immutable `tollSigner`, `_consume(...)` reverts on any failed check, emits `TicketConsumed` |
+| `src/TollAllowEnforcer.sol` | MetaMask Delegation Framework caveat enforcer: each redemption needs a ticket for the exact call (see below) |
 | `src/TollSignerSet.sol` | ERC-1271 signer over a set of keys; the owner (Toll's Safe, two-step ownership) adds and removes keys, so keys rotate without redeploying consumers |
 
 ## The ticket
@@ -95,9 +96,96 @@ _consume(t, sig, account, TollAllow.SCOPE_V4SWAP, subject, 0);
 
 `sender` in a hook is the router, not the trader. Decide what `account` means for your hook (for example a router that forwards the trader in `hookData`) and ask Toll for a ticket with that account.
 
-### Delegation caveat (args)
+## MetaMask delegation caveat
 
-A caveat enforcer (for example under the MetaMask DelegationManager) can take `abi.encode(ticket, sig)` as the redeemer's `args` and, in `beforeHook`, compute `callSubject(target, value, callData)` from the execution, with `account` = the delegator. Keep one enforcer per signer so `used` is shared across all delegations.
+`src/TollAllowEnforcer.sol` is a caveat enforcer for the
+[MetaMask Delegation Framework](https://github.com/MetaMask/delegation-framework). Add it to a delegation and every
+redemption must carry a fresh Toll ticket for the exact call being executed. On Robinhood Chain the framework's v1.3.0
+`DelegationManager` is `0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3` and `EIP7702StatelessDeleGatorImpl` is
+`0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B` (their `documents/Deployments.md`). The enforcer extends their
+`CaveatEnforcer`, vendored from v1.3.0 under `src/vendor/` with license headers kept (only the pragma is relaxed; see
+the header of each file).
+
+The enforcer is not deployed yet; until it is, deploy your own copy (it has no owner and no constructor arguments).
+
+**Terms** (set by the delegator, signed into the delegation):
+
+```solidity
+abi.encode(address tollSigner, uint8 maxVerdict, uint256 valueThreshold)
+// tollSigner:     0x4A2C93066d94F1E69f3EAd5438c4efDdf80a46ba, or a TollSignerSet that includes it
+// maxVerdict:     0 = ALLOW only, 1 = ALLOW or WARN
+// valueThreshold: 0 = always need a ticket; N > 0 = plain ETH sends (empty calldata) below N wei need none
+```
+
+**Args** (set by the redeemer at redemption; `args` is not part of the delegation hash, so it can change per call):
+
+```solidity
+abi.encode(Ticket ticket, bytes signature)
+```
+
+Ask Toll for a ticket with `account` = the delegator (the account that executes), `consumer` = the enforcer address
+(or `address(0)`), scope 1 CALL, and the exact `target`, `value` and `callData` of the execution.
+
+**Checks in `beforeHook`**, in order: call type single and exec type default (batch and try modes revert
+`BatchNotSupported` / `ExecTypeNotSupported`); the small plain ETH exemption above; a ticket is present
+(`TicketMissing`); scope 1; `verdict <= maxVerdict`; `account == delegator`; `consumer` is the enforcer or
+`address(0)`; `subject == callSubject(target, value, callData)`; `validAfter <= block.timestamp <= validUntil`; not
+used; signature valid (ECDSA or ERC-1271). Then the ticket is marked used and `TicketConsumed` is emitted.
+
+Replay: `used[keccak256(abi.encode(delegationManager, tollSigner, nonce))]`, where `delegationManager` is the hook's
+caller. A ticket works once across all delegations. Because the key includes the caller, anyone who copies a pending
+ticket and calls the hook directly cannot burn it for the real redemption.
+
+**Add the caveat** (MetaMask Delegation Toolkit, TypeScript):
+
+```ts
+import { createCaveat } from "@metamask/delegation-toolkit";
+import { encodeAbiParameters } from "viem";
+
+const TOLL_ENFORCER = "0x..."; // TollAllowEnforcer on Robinhood Chain
+const terms = encodeAbiParameters(
+  [{ type: "address" }, { type: "uint8" }, { type: "uint256" }],
+  ["0x4A2C93066d94F1E69f3EAd5438c4efDdf80a46ba", 0, 0n],
+);
+
+// add it next to the framework's own caveats (allowed targets, value limits, time window)
+delegation.caveats.push(createCaveat(TOLL_ENFORCER, terms));
+// ...sign the delegation as usual
+```
+
+**Redeem with a ticket**: get a ticket from Toll for the exact execution, then set the caveat's `args` before
+`redeemDelegations`:
+
+```ts
+const args = encodeAbiParameters(
+  [
+    {
+      type: "tuple",
+      components: [
+        { name: "scope", type: "uint8" }, { name: "verdict", type: "uint8" },
+        { name: "account", type: "address" }, { name: "consumer", type: "address" },
+        { name: "subject", type: "bytes32" }, { name: "validAfter", type: "uint64" },
+        { name: "validUntil", type: "uint64" }, { name: "nonce", type: "bytes32" },
+        { name: "reportHash", type: "bytes32" },
+      ],
+    },
+    { type: "bytes" },
+  ],
+  [ticket, ticketSignature],
+);
+signedDelegation.caveats[tollCaveatIndex].args = args;
+```
+
+**Limits**
+
+- Single call only in v1. Batch executions revert; send one call per redemption.
+- Tickets live 60 seconds and are single use, so ask for the ticket right before redeeming.
+- Put the caveat on the root delegation, where the delegator is the account that executes. On a redelegation the
+  `delegator` the hook sees is the intermediate account, so the `account` check would not match the executing account.
+- The delegator can revoke the delegation at any time with `DelegationManager.disableDelegation`, which does not need
+  Toll. If Toll is down, no new redemptions pass (except small plain ETH sends under `valueThreshold`), but the
+  delegator's own account is never locked.
+- A ticket is necessary, never sufficient. Keep the framework's own enforcers for targets, amounts and time.
 
 ## Gas
 
@@ -107,6 +195,8 @@ Measured with `forge test` (snapshot in `snapshots/`), including the external ca
 | --- | --- |
 | `_consume`, EOA signer | ~69,100 |
 | `_consume`, `TollSignerSet` (ERC-1271) | ~70,700 (a few thousand more when the set is cold) |
+| `TollAllowEnforcer.beforeHook`, EOA signer | ~78,100 |
+| `TollAllowEnforcer.beforeHook`, `TollSignerSet` (ERC-1271) | ~73,500 (runs second in the test, so the enforcer and precompile are already warm) |
 
 Most of it is the fresh `used` slot (~22k) and the signature check.
 
