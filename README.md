@@ -98,6 +98,12 @@ _consume(t, sig, account, TollAllow.SCOPE_V4SWAP, subject, 0);
 
 ## MetaMask delegation caveat
 
+**Deployed on Robinhood Chain (4663):** `TollAllowEnforcer` at
+[`0x6290dfc474f566b3bf612ad78e9dd3890473fdb5`](https://robinhoodchain.blockscout.com/address/0x6290dfc474f566b3bf612ad78e9dd3890473fdb5)
+(tx `0x4b8aff0fac170f08bfc9891d63b65f9cc99554829efbac3ed8f1e42c29620ec3`). Source verified on
+[Sourcify](https://repo.sourcify.dev/4663/0x6290dfc474f566b3bf612ad78e9dd3890473fdb5) (exact match, creation and runtime).
+It has no owner and no admin: nothing about it can be changed after deployment.
+
 `src/TollAllowEnforcer.sol` is a caveat enforcer for the
 [MetaMask Delegation Framework](https://github.com/MetaMask/delegation-framework). Add it to a delegation and every
 redemption must carry a fresh Toll ticket for the exact call being executed. On Robinhood Chain the framework's v1.3.0
