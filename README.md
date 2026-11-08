@@ -6,6 +6,18 @@ Toll checks a transaction off-chain (`check_tx`, `/api/tx/check`). When the answ
 
 A BLOCK is never signed. A ticket is never issued without `from`, or for a transaction carrying an EIP-7702 authorization list.
 
+## Toll's ALLOW signer
+
+Toll's ALLOW signer on Robinhood Chain (4663):
+
+```
+0x4A2C93066d94F1E69f3EAd5438c4efDdf80a46ba
+```
+
+Pin it as `tollSigner` in your consumer, or pin a `TollSignerSet` you control that includes it (then you can add or
+remove keys without redeploying). Tickets signed by any other key do not verify. How to get a ticket and use it:
+https://t0ll.xyz/agents/allow
+
 ## Contracts
 
 | File | What |
@@ -121,7 +133,7 @@ Golden vectors (public test keys, never real keys):
 
 ## Test vectors and the test key
 
-`test/vectors/allowticket-vectors.json` is shared with Toll's server so both sides compute the same digests. Its `testSigner.privateKey` is a **test-only key derived from a public phrase**: it has never held funds and is not Toll's signer. Toll's real signer is a separate key that never leaves the server; consumers pin its address (or a `TollSignerSet`).
+`test/vectors/allowticket-vectors.json` is shared with Toll's server so both sides compute the same digests. Its `testSigner.privateKey` is a **test-only key derived from a public phrase**: it has never held funds and is not Toll's signer. Toll's real signer is a separate key that never leaves the server; consumers pin its address, `0x4A2C93066d94F1E69f3EAd5438c4efDdf80a46ba` (or a `TollSignerSet`).
 
 ## License
 
