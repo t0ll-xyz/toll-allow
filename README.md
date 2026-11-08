@@ -114,7 +114,10 @@ forge test -vv
 forge snapshot
 ```
 
-`test/vectors/allowticket-vectors.json` holds golden vectors built with viem (`hashTypedData`, `signTypedData`, `encodeAbiParameters`) from a public test key. `test_vectors_match_ts` checks the domain separator, type hash, subjects, struct hashes, digests, signatures and calldata suffixes match the Solidity side byte for byte.
+Golden vectors (public test keys, never real keys):
+
+- `test/vectors/allowticket-vectors.json`: written by Toll's TypeScript signer. `test_vectors_match_ts` checks the domain separator, type hash, call and swap subjects, digests and signatures byte for byte, then consumes each ticket on-chain.
+- `test/vectors/allowticket-vectors.viem.json`: independent vectors built with viem, including calldata suffixes. `test_vectors_viem_suffix` also splits each suffix back into body, ticket and signature.
 
 ## License
 

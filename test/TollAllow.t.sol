@@ -332,8 +332,59 @@ contract TollAllowTest is Test {
         );
     }
 
+    function _count(string memory json, string memory arr) internal view returns (uint256 n) {
+        while (vm.keyExistsJson(json, string.concat(arr, "[", vm.toString(n), "]"))) ++n;
+    }
+
+    /// Vectors written by the site (web/lib/allowticket.ts), copied verbatim.
     function test_vectors_match_ts() public {
         string memory json = vm.readFile(string.concat(vm.projectRoot(), "/test/vectors/allowticket-vectors.json"));
+        assertEq(vm.parseJsonUint(json, ".domain.chainId"), CHAIN);
+        assertEq(vm.parseJsonString(json, ".domain.name"), "Toll Allow");
+        assertEq(vm.parseJsonString(json, ".domain.version"), "1");
+        assertEq(vm.parseJsonBytes32(json, ".domainSeparator"), TollAllow.domainSeparator(), "domain");
+        assertEq(vm.parseJsonBytes32(json, ".typeHash"), TollAllow.TICKET_TYPEHASH, "typehash");
+        assertEq(keccak256(bytes(vm.parseJsonString(json, ".typeString"))), TollAllow.TICKET_TYPEHASH, "typeString");
+        address vSigner = vm.parseJsonAddress(json, ".testSigner.address");
+        assertEq(vm.addr(uint256(vm.parseJsonBytes32(json, ".testSigner.privateKey"))), vSigner, "signer");
+
+        uint256 n = _count(json, ".callSubjects");
+        assertGt(n, 0);
+        for (uint256 i; i < n; ++i) {
+            string memory p = string.concat(".callSubjects[", vm.toString(i), "]");
+            bytes32 got = lib.callSubject(
+                vm.parseJsonAddress(json, string.concat(p, ".target")),
+                vm.parseJsonUint(json, string.concat(p, ".value")),
+                vm.parseJsonBytes(json, string.concat(p, ".data"))
+            );
+            assertEq(got, vm.parseJsonBytes32(json, string.concat(p, ".subject")), "callSubject");
+        }
+        n = _count(json, ".swapSubjects");
+        assertGt(n, 0);
+        for (uint256 i; i < n; ++i) {
+            string memory p = string.concat(".swapSubjects[", vm.toString(i), "]");
+            assertEq(_swapVector(json, p), vm.parseJsonBytes32(json, string.concat(p, ".subject")), "swapSubject");
+        }
+        n = _count(json, ".tickets");
+        assertGt(n, 0);
+        for (uint256 i; i < n; ++i) {
+            string memory p = string.concat(".tickets[", vm.toString(i), "]");
+            Ticket memory t = _vt(json, p);
+            bytes32 d712 = TollAllow.hash(t);
+            assertEq(d712, vm.parseJsonBytes32(json, string.concat(p, ".digest")), "digest");
+            bytes memory sig = vm.parseJsonBytes(json, string.concat(p, ".signature"));
+            assertTrue(SignatureChecker.isValidSignatureNow(vSigner, d712, sig), "signature");
+            // full on-chain consume at the ticket's consumer (or any consumer), inside its window
+            address at = t.consumer == address(0) ? makeAddr(string.concat("ts-any", vm.toString(i))) : t.consumer;
+            vm.etch(at, address(new RouterHarness(vSigner)).code);
+            vm.warp(t.validAfter);
+            RouterHarness(at).consume(t, sig, t.account, t.subject, 1);
+        }
+    }
+
+    /// Independent vectors built with viem, including calldata suffixes.
+    function test_vectors_viem_suffix() public {
+        string memory json = vm.readFile(string.concat(vm.projectRoot(), "/test/vectors/allowticket-vectors.viem.json"));
         assertEq(vm.parseJsonUint(json, ".domain.chainId"), CHAIN);
         assertEq(vm.parseJsonBytes32(json, ".domainSeparator"), TollAllow.domainSeparator(), "domain");
         assertEq(vm.parseJsonBytes32(json, ".ticketTypehash"), TollAllow.TICKET_TYPEHASH, "typehash");
