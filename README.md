@@ -136,7 +136,8 @@ Replay: `used[keccak256(abi.encode(delegationManager, tollSigner, nonce))]`, whe
 caller. A ticket works once across all delegations. Because the key includes the caller, anyone who copies a pending
 ticket and calls the hook directly cannot burn it for the real redemption.
 
-**Add the caveat** (MetaMask Delegation Toolkit, TypeScript):
+**Add the caveat** (MetaMask Delegation Toolkit, TypeScript). Sketch only: check the toolkit's current docs for the exact
+caveat-builder call; what matters is the enforcer address and the `terms` encoding below.
 
 ```ts
 import { createCaveat } from "@metamask/delegation-toolkit";
