@@ -119,6 +119,10 @@ Golden vectors (public test keys, never real keys):
 - `test/vectors/allowticket-vectors.json`: written by Toll's TypeScript signer. `test_vectors_match_ts` checks the domain separator, type hash, call and swap subjects, digests and signatures byte for byte, then consumes each ticket on-chain.
 - `test/vectors/allowticket-vectors.viem.json`: independent vectors built with viem, including calldata suffixes. `test_vectors_viem_suffix` also splits each suffix back into body, ticket and signature.
 
+## Test vectors and the test key
+
+`test/vectors/allowticket-vectors.json` is shared with Toll's server so both sides compute the same digests. Its `testSigner.privateKey` is a **test-only key derived from a public phrase**: it has never held funds and is not Toll's signer. Toll's real signer is a separate key that never leaves the server; consumers pin its address (or a `TollSignerSet`).
+
 ## License
 
 MIT
