@@ -27,6 +27,7 @@ https://t0ll.xyz/agents/allow
 | `src/TollAllowEnforcer.sol` | MetaMask Delegation Framework caveat enforcer: each redemption needs a ticket for the exact call (see below) |
 | `src/TollSignerSet.sol` | ERC-1271 signer over a set of keys; the owner (Toll's Safe, two-step ownership) adds and removes keys, so keys rotate without redeploying consumers |
 | `src/TollGateHook.sol` | Uniswap v4 hook (beforeSwap only): each swap in a pool that uses it needs a scope 2 ticket for that exact swap, unless it is under an optional size threshold. Not deployed yet |
+| `src/TollAllowModule.sol` | ERC-7579 hook module for modular smart accounts: each call the account executes needs a scope 1 ticket for that exact call, unless the account exempted it at install. Not deployed yet |
 | `src/TollAssert.sol` | post-conditions in the same transaction: balance deltas within `[min, max]` since a snapshot (transient storage), allowance at most a cap. Not deployed yet |
 | `script/DeployTollGateHook.s.sol` | mines a CREATE2 salt for a hook address with only the beforeSwap flag and prints it; deploying is a separate `deploy()` call |
 
@@ -283,6 +284,101 @@ const hookData = encodeAbiParameters(
   the hook does not gate `modifyLiquidity`.
 - A ticket is necessary, never sufficient. Keep slippage limits and the router's own checks.
 
+## ERC-7579 module (TollAllowModule)
+
+**Status: not deployed yet.** Built and tested against a minimal ERC-7579 account in `test/TollAllowModule.t.sol`
+(shaped like the reference implementation: the account calls `preCheck(msg.sender, msg.value, msg.data)` before it
+executes and `postCheck` after). No owner, no proxy, no admin; one deployment can serve every account.
+
+`src/TollAllowModule.sol` is an ERC-7579 **hook** module (module type 4). Install it on a modular smart account and
+every call the account executes must carry a fresh, single-use Toll ticket (scope 1 CALL) for that exact call.
+
+**Why a hook.** The account runs its hook around every execution, whoever asked for it: a userOp signed by any
+validator, an executor module (`executeFromExecutor`), or the owner calling `execute` directly. A validator (type 1)
+only sees userOps, and an executor (type 2) only gates calls that go through itself, so either would leave other
+paths open.
+
+**Install** (`installModule(4, module, initData)`):
+
+```solidity
+initData = abi.encode(TollAllowModule.InstallData({
+    signer:            0x4A2C93066d94F1E69f3EAd5438c4efDdf80a46ba, // or a TollSignerSet that includes it (ERC-1271)
+    maxVerdict:        0,                // 0 = ALLOW only, 1 = ALLOW or WARN; higher reverts
+    valueThreshold:    0,                // 0 = off; N > 0 = plain ETH sends (empty calldata) below N wei need no ticket
+    allowDelegatecall: false,            // true = DELEGATECALL allowed, but only to skipTargets (never ticketed)
+    skipTargets:       new address[](0)  // targets that need no ticket (any value, any calldata)
+}));
+```
+
+`onUninstall` deletes the config and retires the allowlist in constant gas (a per-account epoch is bumped), so
+uninstalling can never run out of gas and a later install starts clean.
+
+**Where the ticket travels.** Appended to the account's own calldata, after the ABI-encoded arguments of `execute`:
+
+```
+execute(mode, executionCalldata) ‖ abi.encode(ticket, sig)       ‖ uint32 len ‖ 0x900bc3e1   // one ticket (TollAllow.encodeSuffix)
+execute(mode, executionCalldata) ‖ abi.encode(tickets[], sigs[]) ‖ uint32 len ‖ 0x99b190bc   // several: bytes4(keccak256("TollAllow.batch.v1"))
+```
+
+The account's ABI decoder ignores bytes past its arguments, so nothing is stripped and no target ever sees the
+ticket. The hook gets the full `msg.data`, splits the trailer off, and decodes the executions from the rest with the
+same `ExecutionLib` the account uses. Every offset must stay inside the part before the trailer, so the trailer can
+never be read as an execution. For a userOp, put the trailer at the end of `userOp.callData` before signing the userOp
+(get the ticket first; it lives 60 seconds). `encodeBatchSuffix(tickets, sigs)` builds the batch trailer.
+
+**One ticket per call.** Single and batch modes are handled. In a batch, each execution that is not exempt needs its
+own ticket with `subject = keccak256(abi.encode(target, value, keccak256(callData)))`, the same subject Toll signs for
+a single transaction, so no new ticket type is needed. Tickets are matched to the non-exempt executions in order.
+A missing ticket (`TicketMissing(executionIndex)`), a ticket for another call (`TicketSubject`) or a leftover ticket
+(`TicketsLeftOver`) reverts the whole execution. `subjectsFor(account, mode, executionCalldata)` lists the subjects to
+ask Toll for, in order.
+
+**Ask Toll for** scope 1 tickets with `account` = the smart account, `consumer` = the module address (or
+`address(0)`), and the exact `target`, `value` and `callData` of each execution.
+
+**Checks in `preCheck`**, in order:
+
+1. the calling account has the module installed (`NotInitialized`);
+2. the trailer, if present, is well formed (`TicketSuffixMalformed`);
+3. the call: `execute` and `executeFromExecutor` are checked; `installModule` and `uninstallModule` pass without a
+   ticket; anything else the account routes through the hook (`executeUserOp`, fallback handlers, vendor functions)
+   reverts `UnsupportedCall`, so it is refused rather than let through unchecked;
+4. the mode: default mode selector only (a vendor mode could lay out executions differently,
+   `ModeSelectorNotSupported`), exec type default or try (`ExecTypeNotSupported`), call type single, batch or
+   delegatecall (`CallTypeNotSupported`);
+5. delegatecall: only if `allowDelegatecall` and the target is in `skipTargets` (`DelegatecallNotAllowed`); a scope 1
+   ticket describes a call, never a delegatecall, so no ticket can unlock one;
+6. per execution: exempt if `valueThreshold > 0`, `value < valueThreshold` and the calldata is empty, or if the target
+   is in `skipTargets`; otherwise the next ticket must pass: scope 1, `verdict <= maxVerdict`, `account ==` the
+   account, `consumer` is the module or `address(0)`, subject, `validAfter <= block.timestamp <= validUntil`, not used,
+   signature by the account's signer (ECDSA or ERC-1271). Then `used[keccak256(abi.encode(signer, nonce))]` is set and
+   `TicketConsumed` is emitted;
+7. every ticket in the trailer was used.
+
+`postCheck` does nothing. With exec type try, a ticket is used up even if its call then fails.
+
+**Trust model: what binds and what does not**
+
+- Binds: the account (`msg.sender` of `preCheck`), the exact target, value and calldata of each call, this module
+  (or any module, with `consumer = 0`), a 60 second window and one use.
+- Replay: one `used` map for every account on this deployment, keyed by `(signer, nonce)`. A ticket names its
+  account, so nobody can burn another account's ticket by calling `preCheck` directly (an uninstalled caller gets
+  `NotInitialized`, any other account gets `TicketAccount`).
+- Does not bind: the trailer itself is not covered by the subject (it carries the ticket). Gas, the order of other
+  executions in the batch, and anything outside the account's `execute` are not bound. Exempt calls (allowlisted
+  targets, small plain ETH sends) are not checked at all; an allowlisted target gets any calldata and any value, so
+  never allowlist the account itself, a token you hold, or a router.
+- The account's own management calls are not gated. `installModule` / `uninstallModule` pass, so whoever controls the
+  account's root validator can remove the module at any time. That is the exit if Toll is down or its key is lost,
+  and it also means the gate only holds against keys that cannot reach those calls: give an agent a session key or
+  executor scoped to `execute`, and keep the root key with the owner.
+- Accounts differ in what they pass as `msgData`. The module expects the account's calldata for `execute` /
+  `executeFromExecutor` (as the reference implementation does). An account that wraps userOps in `executeUserOp` and
+  runs the hook around that wrapper is refused with `UnsupportedCall`, not silently let through; check your account
+  before relying on the module.
+- A ticket is necessary, never sufficient. Keep the account's own policies (spending limits, target scopes, time
+  windows).
+
 ## Post-trade checks (TollAssert)
 
 **Status: not deployed yet.** It has no owner and no constructor arguments; one deployment can serve everyone.
@@ -354,6 +450,10 @@ Measured with `forge test` (snapshot in `snapshots/`), including the external ca
 | `TollGateHook.beforeSwap`, EOA signer | ~68,100 |
 | `TollGateHook.beforeSwap`, `TollSignerSet` (ERC-1271) | ~69,900 (runs second in the test, precompile warm) |
 | `TollGateHook.beforeSwap`, below the threshold (no ticket) | ~26,400 |
+| `TollAllowModule.preCheck`, one call, EOA signer | ~80,500 |
+| `TollAllowModule.preCheck`, one call, `TollSignerSet` (ERC-1271) | ~84,400 (separate test, set and precompile cold) |
+| `TollAllowModule.preCheck`, batch of 2 calls, 2 tickets, EOA signer | ~129,300 (runs after the single call in the same test) |
+| `TollAllowModule.preCheck`, allowlisted target (no ticket) | ~38,600 |
 | `TollAssert` snapshot + assertBalances, 2 tokens, inside a smart account batch | ~81,100 (143,800 for snapshot + swap + assert, minus 62,700 for the same swap alone) |
 
 Most of it is the fresh `used` slot (~22k) and the signature check.
