@@ -26,9 +26,9 @@ https://t0ll.xyz/agents/allow
 | `src/TollAllowConsumer.sol` | abstract: `used[keccak256(signer, nonce)]`, immutable `tollSigner`, `_consume(...)` reverts on any failed check, emits `TicketConsumed` |
 | `src/TollAllowEnforcer.sol` | MetaMask Delegation Framework caveat enforcer: each redemption needs a ticket for the exact call (see below) |
 | `src/TollSignerSet.sol` | ERC-1271 signer over a set of keys; the owner (Toll's Safe, two-step ownership) adds and removes keys, so keys rotate without redeploying consumers |
-| `src/TollGateHook.sol` | Uniswap v4 hook (beforeSwap only): each swap in a pool that uses it needs a scope 2 ticket for that exact swap, unless it is under an optional size threshold. Not deployed yet |
-| `src/TollAllowModule.sol` | ERC-7579 hook module for modular smart accounts: each call the account executes needs a scope 1 ticket for that exact call, unless the account exempted it at install. Not deployed yet |
-| `src/TollAssert.sol` | post-conditions in the same transaction: balance deltas within `[min, max]` since a snapshot (transient storage), allowance at most a cap. Not deployed yet |
+| `src/TollGateHook.sol` | Uniswap v4 hook (beforeSwap only): each swap in a pool that uses it needs a scope 2 ticket for that exact swap, unless it is under an optional size threshold. Deployed: `0x08324e1aDeC7a4047D2DA692d02B891179B14080` |
+| `src/TollAllowModule.sol` | ERC-7579 hook module for modular smart accounts: each call the account executes needs a scope 1 ticket for that exact call, unless the account exempted it at install. Deployed: `0xa86955745ff2caffed94ee3c363fd86091a972fd` |
+| `src/TollAssert.sol` | post-conditions in the same transaction: balance deltas within `[min, max]` since a snapshot (transient storage), allowance at most a cap. Deployed: `0x7623a849b2c5fa6f6765163bf4bf66aef16fe1b1` |
 | `script/DeployTollGateHook.s.sol` | mines a CREATE2 salt for a hook address with only the beforeSwap flag and prints it; deploying is a separate `deploy()` call |
 
 ## The ticket
@@ -200,8 +200,12 @@ signedDelegation.caveats[tollCaveatIndex].args = args;
 
 ## Uniswap v4 hook gate (TollGateHook)
 
-**Status: not deployed yet.** Built and tested (unit tests, plus a fork test against the live Uniswap v4 PoolManager
-on Robinhood Chain, `0x8366a39CC670B4001A1121B8F6A443A643e40951`).
+**Deployed on Robinhood Chain (4663):** [`0x08324e1aDeC7a4047D2DA692d02B891179B14080`](https://robinhoodchain.blockscout.com/address/0x08324e1aDeC7a4047D2DA692d02B891179B14080) (tx `0x9240dc7e965b1dd2a6dfec1c47ff6704a053aee9a59b72624d887bcf0314aae8`,
+through the CREATE2 deployer, salt `0x…90df`). Source verified on [Sourcify](https://repo.sourcify.dev/4663/0x08324e1aDeC7a4047D2DA692d02B891179B14080) (exact match, creation and runtime).
+This deployment: PoolManager `0x8366a39CC670B4001A1121B8F6A443A643e40951`, signer Toll's ALLOW key
+`0x4A2C93066d94F1E69f3EAd5438c4efDdf80a46ba`, ALLOW only (`maxVerdict` 0), `AccountMode.ORIGIN`, no size threshold
+(every swap needs a ticket). No owner, no admin. Built and tested (unit tests, plus a fork test against the live
+Uniswap v4 PoolManager on Robinhood Chain). Other settings = deploy your own with the script below.
 
 `src/TollGateHook.sol` is a Uniswap v4 hook with one permission, `beforeSwap`. A pool opts in by naming the hook in
 its `PoolKey`; from then on every swap in that pool must carry a fresh, single-use Toll ticket (scope 2 V4SWAP) for
@@ -286,7 +290,8 @@ const hookData = encodeAbiParameters(
 
 ## ERC-7579 module (TollAllowModule)
 
-**Status: not deployed yet.** Built and tested against a minimal ERC-7579 account in `test/TollAllowModule.t.sol`
+**Deployed on Robinhood Chain (4663):** [`0xa86955745ff2caffed94ee3c363fd86091a972fd`](https://robinhoodchain.blockscout.com/address/0xa86955745ff2caffed94ee3c363fd86091a972fd) (tx `0xdb34f47f027d2d36411869224c11a40e025f8cbda561ebaddec68b6247b959ed`).
+Source verified on [Sourcify](https://repo.sourcify.dev/4663/0xa86955745ff2caffed94ee3c363fd86091a972fd) (exact match, creation and runtime). Built and tested against a minimal ERC-7579 account in `test/TollAllowModule.t.sol`
 (shaped like the reference implementation: the account calls `preCheck(msg.sender, msg.value, msg.data)` before it
 executes and `postCheck` after). No owner, no proxy, no admin; one deployment can serve every account.
 
@@ -381,7 +386,9 @@ ask Toll for, in order.
 
 ## Post-trade checks (TollAssert)
 
-**Status: not deployed yet.** It has no owner and no constructor arguments; one deployment can serve everyone.
+**Deployed on Robinhood Chain (4663):** [`0x7623a849b2c5fa6f6765163bf4bf66aef16fe1b1`](https://robinhoodchain.blockscout.com/address/0x7623a849b2c5fa6f6765163bf4bf66aef16fe1b1) (tx `0x557990239e4c61d5a077eb914b2bbe403f74131d3072947942bf55434d893992`).
+Source verified on [Sourcify](https://repo.sourcify.dev/4663/0x7623a849b2c5fa6f6765163bf4bf66aef16fe1b1) (exact match, creation and runtime). It has no owner and no constructor arguments; one
+deployment serves everyone.
 
 `src/TollAssert.sol` checks, at the end of a transaction, that a trade did what the pre-sign check said and that
 nothing else listed left the wallet. Toll's `check_tx` simulates the transaction and returns the balance change of
