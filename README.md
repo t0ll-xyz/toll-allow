@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/toll-header.svg" width="100%" alt="toll-allow: no ALLOW ticket, no call, enforced on chain"/></p>
+
 # toll-allow
 
 Solidity helpers to require a **Toll ALLOW ticket** before a sensitive call on Robinhood Chain (4663).
